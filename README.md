@@ -20,6 +20,46 @@ You can start editing the page by modifying `app/page.tsx`. The page auto-update
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 
+## Environment Setup
+
+1. Copy `.env.example` to `.env.local`:
+```bash
+cp .env.example .env.local
+```
+
+2. Fill in your environment variables in `.env.local`:
+   - Add your PayDunya API keys
+   - Set `NEXT_PUBLIC_BASE_URL` to your Vercel deployment URL
+   - Configure your PostgreSQL connection string
+
+3. For production deployment on Vercel:
+   - Go to your Vercel project settings
+   - Add all environment variables in the "Environment Variables" section
+   - Never commit `.env.local` to version control
+
+## Intégration PayDunya
+
+### Configuration
+
+1. Configurez `NEXT_PUBLIC_BASE_URL` avec l'URL de votre déploiement Vercel (ex: https://attaqwa-paiement.vercel.app)
+
+2. Sur PayDunya → Intégrer notre API → IPN:
+   - **Endpoint IPN**: `https://attaqwa-paiement.vercel.app/api/paydunya/ipn`
+   - **Activer**: Oui
+
+### Flux de paiement
+
+1. **Création de facture**: `POST /api/test-paydunya`
+2. **Paiement**: L'utilisateur paie via PayDunya
+3. **Webhook IPN**: PayDunya notifie `POST /api/paydunya/ipn`
+4. **Déblocage**: Les entitlements sont mis à jour automatiquement
+
+### API Endpoints
+
+- `GET /api/entitlements?userId=xxx` - Vérifier les accès utilisateur
+- `POST /api/test-paydunya` - Créer une facture PayDunya
+- `POST /api/paydunya/ipn` - Webhook PayDunya (automatique)
+
 ## Learn More
 
 To learn more about Next.js, take a look at the following resources:
