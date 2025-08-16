@@ -22,14 +22,13 @@ export async function POST(req: Request) {
       PAYDUNYA_ENV,
       PAYDUNYA_MASTER_KEY,
       PAYDUNYA_PRIVATE_KEY,
-      PAYDUNYA_PUBLIC_KEY,
       PAYDUNYA_TOKEN,
       PAYDUNYA_RETURN_URL,
       PAYDUNYA_CANCEL_URL,
       NEXT_PUBLIC_BASE_URL,
     } = process.env;
 
-    if (!PAYDUNYA_PUBLIC_KEY || !PAYDUNYA_PRIVATE_KEY || !PAYDUNYA_TOKEN) {
+    if (!PAYDUNYA_MASTER_KEY || !PAYDUNYA_PRIVATE_KEY || !PAYDUNYA_TOKEN) {
       return NextResponse.json({ error: "PayDunya keys missing" }, { status: 500, headers: CORS });
     }
 
@@ -38,10 +37,9 @@ export async function POST(req: Request) {
       : "https://app.paydunya.com/api/v1";
 
     const origin = NEXT_PUBLIC_BASE_URL || "";
-    // Temporairement désactiver l'IPN pour les tests locaux
-    const callbackUrl = ""; // origin ? `${origin}/api/paydunya/ipn` : "";
+    const callbackUrl = origin ? `${origin}/api/paydunya/ipn` : "";
 
-    // Structure selon la documentation PayDunya
+    // Structure selon la documentation PayDunya HTTP/JSON
     const payload = {
       invoice: {
         items: [{ name: itemName, price: amount, quantity: 1 }],
@@ -59,9 +57,10 @@ export async function POST(req: Request) {
       },
     };
 
+    // Headers selon la documentation PayDunya HTTP/JSON
     const headers = {
       "Content-Type": "application/json",
-      "PAYDUNYA-MASTER-KEY": PAYDUNYA_PUBLIC_KEY, // Utiliser la clé publique ici !
+      "PAYDUNYA-MASTER-KEY": PAYDUNYA_MASTER_KEY,
       "PAYDUNYA-PRIVATE-KEY": PAYDUNYA_PRIVATE_KEY,
       "PAYDUNYA-TOKEN": PAYDUNYA_TOKEN,
     };
@@ -79,56 +78,52 @@ export async function POST(req: Request) {
 
     const res = await axios.post(`${BASE}/checkout-invoice/create`, payload, { headers });
     
-    // Si la réponse est HTML (page de connexion), c'est un succès !
-    if (typeof res.data === 'string' && res.data.includes('<!DOCTYPE html>')) {
-      // Extraire l'URL de paiement depuis la réponse HTML
-      const checkoutUrl = `${BASE.replace('/api/v1', '').replace('/sandbox-api/v1', '')}/checkout/${res.headers['x-invoice-token'] || 'pending'}`;
+    // Vérifier la réponse selon la documentation PayDunya
+    if (res.data && res.data.response_code === "00") {
+      const token = res.data.token;
+      const checkoutUrl = res.data.response_text; // URL de paiement PayDunya
       
-      try {
-        await db.insert(payments).values({
-          token: res.headers['x-invoice-token'] || 'pending',
-          userId, 
-          amount, 
-          status: "pending", 
-          providerData: JSON.stringify({ html: res.data.substring(0, 200) + '...' }),
-        }).onConflictDoUpdate({
-          target: payments.token,
-          set: { userId, amount, status: "pending", providerData: JSON.stringify({ html: res.data.substring(0, 200) + '...' }) },
-        });
-      } catch (dbError) {
-        console.error("Database error:", dbError);
-        // Continue même si la DB échoue
+      // Sauvegarder en base de données (optionnel pour les tests)
+      if (process.env.POSTGRES_URL) {
+        try {
+          await db.insert(payments).values({
+            token,
+            userId,
+            amount,
+            status: "pending",
+            providerData: JSON.stringify(res.data),
+          }).onConflictDoUpdate({
+            target: payments.token,
+            set: { userId, amount, status: "pending", providerData: JSON.stringify(res.data) },
+          });
+          console.log("✅ Transaction sauvegardée en base de données");
+        } catch (dbError) {
+          console.error("⚠️ Database error (non bloquant):", dbError instanceof Error ? dbError.message : String(dbError));
+          // Continue même si la DB échoue
+        }
+      } else {
+        console.log("ℹ️ Base de données non configurée - transaction non sauvegardée");
       }
 
-      // Retourner l'URL de paiement pour le front
+      // Retourner la réponse selon la documentation PayDunya
       return NextResponse.json({
         success: true,
+        response_code: res.data.response_code,
+        response_text: res.data.response_text,
+        description: res.data.description,
+        token: res.data.token,
         checkout_url: checkoutUrl,
         message: "Facture créée avec succès. Redirection vers PayDunya...",
-        status: "pending"
       }, { headers: CORS });
     }
 
-    // Si c'est du JSON (erreur ou succès)
-    const providerData = res.data;
-    const token = providerData?.token || providerData?.invoice_token || providerData?.invoice?.token || null;
+    // Si response_code n'est pas "00", c'est une erreur
+    return NextResponse.json({
+      error: res.data.response_text || "Erreur PayDunya",
+      response_code: res.data.response_code,
+      details: res.data
+    }, { status: 400, headers: CORS });
 
-    if (token) {
-      try {
-        await db.insert(payments).values({
-          token, userId, amount, status: "pending", providerData: JSON.stringify(providerData),
-        }).onConflictDoUpdate({
-          target: payments.token,
-          set: { userId, amount, status: "pending", providerData: JSON.stringify(providerData) },
-        });
-      } catch (dbError) {
-        console.error("Database error:", dbError);
-        // Continue même si la DB échoue
-      }
-    }
-
-    // Retourner les données pour le front
-    return NextResponse.json(providerData, { headers: CORS });
   } catch (e: unknown) {
     let errorMessage = "PayDunya create failed";
     if (e instanceof Error) {
