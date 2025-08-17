@@ -11,7 +11,7 @@ export const runtime = 'nodejs';
 export async function POST(req: NextRequest) {
   try {
     const raw = await req.text(); // garder le raw pour signature
-    const signatureOk = verifyIpnSignature(req as any, raw);
+    const signatureOk = verifyIpnSignature(req as Request, raw);
     const payload = JSON.parse(raw || '{}');
 
     const providerRef = payload?.transaction_id || payload?.token || 'unknown';

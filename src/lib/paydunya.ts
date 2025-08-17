@@ -80,7 +80,7 @@ export async function createCheckoutInvoice(p: CreateInvoiceParams) {
   }
 }
 
-export function verifyIpnSignature(req: Request, rawBody: string): boolean {
+export function verifyIpnSignature(req: Request, _rawBody: string): boolean {
   // TODO: Implémenter la vérification HMAC selon la documentation PayDunya
   // Pour l'instant, on retourne true pour la compatibilité
   // En production, il faudra vérifier la signature avec la clé privée

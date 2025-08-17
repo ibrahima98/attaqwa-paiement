@@ -50,7 +50,7 @@ export const auditLogs = pgTable('audit_logs', {
   id: serial('id').primaryKey(),
   uid: varchar('uid', { length: 128 }),
   action: varchar('action', { length: 64 }).notNull(),
-  meta: jsonb('meta').$type<Record<string, any>>().notNull(),
+  meta: jsonb('meta').$type<Record<string, unknown>>().notNull(),
   createdAt: timestamp('created_at').defaultNow(),
 });
 
