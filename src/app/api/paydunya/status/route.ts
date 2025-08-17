@@ -1,15 +1,12 @@
 import { db } from '@/db/client';
-import { entitlements } from '@/db/schema';
-import { requireUser } from '@/lib/auth';
-import { serverError, unauthorized } from '@/lib/http';
+import { payments } from '@/db/schema';
+import { badRequest, serverError } from '@/lib/http';
 import { jsonRes } from '@/lib/logger';
 import { rateLimit } from '@/lib/ratelimit';
 import { eq } from 'drizzle-orm';
 import { NextRequest } from 'next/server';
 
 export const runtime = 'nodejs';
-
-const RESOURCES = ['BOOK_PART_2','BOOK_PART_3'] as const;
 
 export async function GET(req: NextRequest) {
   try {
@@ -19,26 +16,13 @@ export async function GET(req: NextRequest) {
       return Response.json({ error: 'Rate limit exceeded' }, { status: 429 });
     }
 
-    let uid: string;
-    try { 
-      uid = await requireUser(req); 
-    } catch { 
-      return unauthorized(); 
-    }
-
-    const rows = await db.select().from(entitlements).where(eq(entitlements.uid, uid));
-    const grantedSet = new Set(rows.map(r=>r.resourceId));
-
-    return jsonRes({
-      userId: uid,
-      resources: RESOURCES.map(r => ({
-        id: r,
-        granted: grantedSet.has(r),
-        grantedAt: rows.find(x=>x.resourceId===r)?.grantedAt ?? null,
-        expiresAt: rows.find(x=>x.resourceId===r)?.expiresAt ?? null,
-        sourcePaymentId: rows.find(x=>x.resourceId===r)?.sourcePaymentId ?? null,
-      }))
-    });
+    const token = new URL(req.url).searchParams.get('token');
+    if (!token) return badRequest('token required');
+    
+    const [row] = await db.select().from(payments).where(eq(payments.providerToken, token));
+    if (!row) return jsonRes({ status: 'UNKNOWN' }, 404);
+    
+    return jsonRes({ status: row.status });
   } catch (err: unknown) {
     return serverError(err);
   }

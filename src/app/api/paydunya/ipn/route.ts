@@ -1,49 +1,81 @@
-import { db } from "@/db/client";
-import { entitlements, payments } from "@/db/schema";
-import { eq } from "drizzle-orm";
-import { NextResponse } from "next/server";
+import { db } from '@/db/client';
+import { auditLogs, entitlements, ipnEvents, payments } from '@/db/schema';
+import { serverError } from '@/lib/http';
+import { jsonRes } from '@/lib/logger';
+import { verifyIpnSignature } from '@/lib/paydunya';
+import { eq } from 'drizzle-orm';
+import { NextRequest } from 'next/server';
 
-const CORS = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization, Paydunya-Private-Key, Paydunya-Token, Paydunya-Master-Key",
-  "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-};
+export const runtime = 'nodejs';
 
-export async function OPTIONS() {
-  return new NextResponse(null, { status: 204, headers: CORS });
+export async function POST(req: NextRequest) {
+  try {
+    const raw = await req.text(); // garder le raw pour signature
+    const signatureOk = verifyIpnSignature(req as any, raw);
+    const payload = JSON.parse(raw || '{}');
+
+    const providerRef = payload?.transaction_id || payload?.token || 'unknown';
+    
+    // idempotence
+    try {
+      await db.insert(ipnEvents).values({
+        providerRef, 
+        rawPayload: payload, 
+        signatureOk
+      });
+    } catch {
+      // en double → ok
+      return jsonRes({ ok: true, duplicate: true }, 200);
+    }
+
+    // Trouver payment par token
+    const token = payload?.token || payload?.reference || null;
+    if (!token) return jsonRes({ ok:false, error:'No token' }, 400);
+
+    const [pay] = await db.select().from(payments).where(eq(payments.providerToken, token));
+    if (!pay) return jsonRes({ ok:false, error:'Payment not found' }, 404);
+
+    // Traduire statut PayDunya vers notre statut
+    const providerStatus = String(payload?.status || '').toUpperCase(); // ex: completed/failed/canceled
+    let status: 'PENDING'|'PAID'|'CANCELED'|'EXPIRED' = 'PENDING';
+    if (providerStatus.includes('COMPLETE') || providerStatus === 'PAID') status = 'PAID';
+    else if (providerStatus.includes('CANCEL')) status = 'CANCELED';
+    else if (providerStatus.includes('EXPIRE')) status = 'EXPIRED';
+
+    await db.update(payments).set({ status }).where(eq(payments.id, pay.id));
+
+    if (status === 'PAID') {
+      // Grant entitlement
+      const resourceId = pay.planId;
+      await db
+        .insert(entitlements)
+        .values({ uid: pay.uid, resourceId, sourcePaymentId: pay.id })
+        .onConflictDoUpdate({
+          target: [entitlements.uid, entitlements.resourceId],
+          set: { sourcePaymentId: pay.id },
+        });
+
+      await db.insert(auditLogs).values({
+        uid: pay.uid, 
+        action: 'ENTITLEMENT_GRANTED', 
+        meta: { resourceId, paymentId: pay.id }
+      });
+    }
+
+    return jsonRes({ ok: true });
+  } catch (err: unknown) {
+    return serverError(err);
+  }
 }
 
-export async function POST(req: Request) {
-  try {
-    const data = await req.json().catch(() => ({}));
-
-    const status = data?.status || data?.invoice?.status;
-    const userId = data?.custom_data?.userId || data?.invoice?.custom_data?.userId;
-    const token = data?.token || data?.invoice?.token || data?.invoice_token;
-
-    if (!userId) {
-      return NextResponse.json({ error: "userId missing in IPN payload" }, { status: 400, headers: CORS });
+// Route legacy pour compatibilité
+export async function OPTIONS() {
+  return new Response(null, { 
+    status: 204,
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+      'Access-Control-Allow-Methods': 'POST,OPTIONS',
     }
-
-    if (status === "completed" || status === "confirmed") {
-      await db.insert(entitlements)
-        .values({ userId, part2: true, part3: true })
-        .onConflictDoUpdate({ target: entitlements.userId, set: { part2: true, part3: true } });
-
-      if (token) {
-        await db.update(payments).set({ status: "confirmed", providerData: JSON.stringify(data) })
-          .where(eq(payments.token, token));
-      }
-    } else if (status === "canceled" || status === "failed") {
-      if (token) {
-        await db.update(payments).set({ status, providerData: JSON.stringify(data) })
-          .where(eq(payments.token, token));
-      }
-    }
-
-    return NextResponse.json({ ok: true }, { headers: CORS });
-  } catch (e: unknown) {
-    const errorMessage = e instanceof Error ? e.message : "IPN error";
-    return NextResponse.json({ error: errorMessage }, { status: 500, headers: CORS });
-  }
+  });
 } 
