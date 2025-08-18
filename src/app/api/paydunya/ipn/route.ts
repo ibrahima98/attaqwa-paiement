@@ -11,8 +11,13 @@ export const runtime = 'nodejs';
 export async function POST(req: NextRequest) {
   try {
     const raw = await req.text(); // garder le raw pour signature
+    console.log('🔔 IPN reçu:', raw);
+    
     const signatureOk = verifyIpnSignature(req as Request, raw);
+    console.log('🔐 Signature IPN:', signatureOk);
+    
     const payload = JSON.parse(raw || '{}');
+    console.log('📦 Payload IPN:', JSON.stringify(payload, null, 2));
 
     const providerRef = payload?.transaction_id || payload?.token || 'unknown';
     
@@ -37,14 +42,13 @@ export async function POST(req: NextRequest) {
 
     // Traduire statut PayDunya vers notre statut
     const providerStatus = String(payload?.status || '').toUpperCase(); // ex: completed/failed/canceled
-    let status: 'PENDING'|'PAID'|'CANCELED'|'EXPIRED' = 'PENDING';
-    if (providerStatus.includes('COMPLETE') || providerStatus === 'PAID') status = 'PAID';
-    else if (providerStatus.includes('CANCEL')) status = 'CANCELED';
-    else if (providerStatus.includes('EXPIRE')) status = 'EXPIRED';
+    let status: 'PENDING'|'COMPLETED'|'FAILED' = 'PENDING';
+    if (providerStatus.includes('COMPLETE') || providerStatus === 'PAID' || providerStatus === 'SUCCESS') status = 'COMPLETED';
+    else if (providerStatus.includes('CANCEL') || providerStatus.includes('FAIL')) status = 'FAILED';
 
     await db.update(payments).set({ status }).where(eq(payments.id, pay.id));
 
-    if (status === 'PAID') {
+    if (status === 'COMPLETED') {
       // Grant entitlement
       const resourceId = pay.planId;
       await db
