@@ -24,7 +24,9 @@ export async function verifyIdToken(idToken: string) {
   try {
     return await getAuth(app).verifyIdToken(idToken);
   } catch (error) {
-    console.error('Token verification failed:', error);
-    throw new Error('Invalid token');
+    // Remonte une erreur plus explicite pour le diagnostic
+    const message = error instanceof Error ? error.message : String(error);
+    console.error('Token verification failed:', message);
+    throw new Error(`Invalid token: ${message}`);
   }
 } 
