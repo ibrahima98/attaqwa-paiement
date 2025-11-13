@@ -11,15 +11,65 @@ export const runtime = 'nodejs';
 export async function POST(req: NextRequest) {
   try {
     const raw = await req.text(); // garder le raw pour signature
-    console.log('🔔 IPN reçu:', raw);
+    const contentType = req.headers.get('content-type') || '';
+    console.log('🔔 IPN reçu:', { contentType, rawSnippet: raw.slice(0, 200) });
     
     const signatureOk = verifyIpnSignature(req as Request, raw);
     console.log('🔐 Signature IPN:', signatureOk);
     
-    const payload = JSON.parse(raw || '{}');
-    console.log('📦 Payload IPN:', JSON.stringify(payload, null, 2));
+    // PayDunya envoie l'IPN en application/x-www-form-urlencoded (clé "data")
+    let payload: Record<string, unknown> = {};
+    const getString = (obj: Record<string, unknown>, key: string): string | undefined => {
+      const v = obj[key];
+      return typeof v === 'string' ? v : undefined;
+    };
+    try {
+      if (contentType.includes('application/x-www-form-urlencoded')) {
+        const form = new URLSearchParams(raw);
+        const data = form.get('data');
+        if (data) {
+          // data contient généralement un JSON stringifié
+          try {
+            payload = JSON.parse(data);
+          } catch {
+            payload = { data };
+          }
+        } else {
+          // Champs plats (ex: data[token], data[status], token, status, transaction_id)
+          const flat = Object.fromEntries(form.entries());
+          const normalized: Record<string, unknown> = {};
+          for (const [k, v] of Object.entries(flat)) {
+            const m = k.match(/^data\[(.+)\]$/);
+            if (m) {
+              normalized[m[1]] = v;
+            } else {
+              normalized[k] = v;
+            }
+          }
+          payload = normalized;
+        }
+      } else if (contentType.includes('application/json')) {
+        payload = JSON.parse(raw || '{}');
+      } else {
+        // Fallback: tentative JSON puis key=value parsing simple
+        try {
+          payload = JSON.parse(raw || '{}');
+        } catch {
+          const form = new URLSearchParams(raw);
+          payload = Object.fromEntries(form.entries());
+        }
+      }
+    } catch (e) {
+      console.error('❌ Erreur parsing IPN:', e);
+      payload = {};
+    }
+    console.log('📦 Payload IPN (normalisé):', JSON.stringify(payload, null, 2));
 
-    const providerRef = payload?.transaction_id || payload?.token || 'unknown';
+    const providerRef =
+      getString(payload, 'transaction_id') ||
+      getString(payload, 'token') ||
+      getString(payload, 'reference') ||
+      'unknown';
     
     // idempotence
     try {
@@ -34,17 +84,20 @@ export async function POST(req: NextRequest) {
     }
 
     // Trouver payment par token
-    const token = payload?.token || payload?.reference || null;
+    const token = getString(payload, 'token') || getString(payload, 'reference') || null;
     if (!token) return jsonRes({ ok:false, error:'No token' }, 400);
 
     const [pay] = await db.select().from(payments).where(eq(payments.providerToken, token));
     if (!pay) return jsonRes({ ok:false, error:'Payment not found' }, 404);
 
     // Traduire statut PayDunya vers notre statut
-    const providerStatus = String(payload?.status || '').toUpperCase(); // ex: completed/failed/canceled
+    const providerStatus = String(getString(payload, 'status') || '').toUpperCase(); // ex: COMPLETED/FAILED/CANCELLED/PAID
     let status: 'PENDING'|'COMPLETED'|'FAILED' = 'PENDING';
-    if (providerStatus.includes('COMPLETE') || providerStatus === 'PAID' || providerStatus === 'SUCCESS') status = 'COMPLETED';
-    else if (providerStatus.includes('CANCEL') || providerStatus.includes('FAIL')) status = 'FAILED';
+    if (providerStatus.includes('COMPLETE') || providerStatus === 'PAID' || providerStatus === 'SUCCESS') {
+      status = 'COMPLETED';
+    } else if (providerStatus.includes('CANCEL') || providerStatus.includes('FAIL')) {
+      status = 'FAILED';
+    }
 
     await db.update(payments).set({ status }).where(eq(payments.id, pay.id));
 
