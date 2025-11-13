@@ -2,7 +2,7 @@ import { db } from '@/db/client';
 import { auditLogs, payments } from '@/db/schema';
 import { requireUser } from '@/lib/auth';
 import { badRequest, serverError } from '@/lib/http';
-import { jsonRes } from '@/lib/logger';
+import { jsonRes, log, error } from '@/lib/logger';
 import { createCheckoutInvoice } from '@/lib/paydunya';
 import { rateLimit } from '@/lib/ratelimit';
 import { NextRequest } from 'next/server';
@@ -16,6 +16,10 @@ const PLAN_PRICES: Record<string, {amount: number, description: string}> = {
 
 export async function POST(req: NextRequest) {
   try {
+    // Debug: traces minimales
+    const hasAuth = (req.headers.get('authorization') || '').startsWith('Bearer ');
+    log('Checkout request received', { hasAuth });
+
     // Rate limiting
     const clientIp = req.headers.get('x-forwarded-for') || req.headers.get('x-real-ip') || 'unknown';
     if (!rateLimit(clientIp, 10, 60_000)) {
@@ -67,6 +71,7 @@ export async function POST(req: NextRequest) {
       checkout_url: invoice.checkout_url 
     }, 201);
   } catch (err: unknown) {
+    error('Checkout error', err);
     return serverError(err);
   }
 }
