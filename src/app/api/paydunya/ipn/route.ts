@@ -84,7 +84,27 @@ export async function POST(req: NextRequest) {
     }
 
     // Trouver payment par token
-    const token = getString(payload, 'token') || getString(payload, 'reference') || null;
+    // Extraction robuste du token:
+    // - token / reference à la racine
+    // - invoice.token quand data est JSON imbriqué
+    // - clés form-urlencoded "plates" de type data[invoice][token] / invoice][token / invoice.token
+    const tokenCandidates: Array<string | undefined> = [];
+    tokenCandidates.push(getString(payload, 'token'));
+    tokenCandidates.push(getString(payload, 'reference'));
+    // invoice.token si présent
+    const maybeInvoice = (payload as Record<string, unknown>)['invoice'];
+    if (maybeInvoice && typeof maybeInvoice === 'object') {
+      const invToken = (maybeInvoice as Record<string, unknown>)['token'];
+      if (typeof invToken === 'string') tokenCandidates.push(invToken);
+    }
+    // scan des clés "plates" qui contiennent invoice + token (ex: 'invoice][token') ou finissent par ']token'
+    for (const [k, v] of Object.entries(payload)) {
+      const keyLower = k.toLowerCase();
+      if (typeof v === 'string' && (keyLower.endsWith(']token') || (keyLower.includes('invoice') && keyLower.includes('token')) || keyLower.includes('invoice.token'))) {
+        tokenCandidates.push(v);
+      }
+    }
+    const token = tokenCandidates.find(t => typeof t === 'string' && t.length > 5) || null;
     if (!token) return jsonRes({ ok:false, error:'No token' }, 400);
 
     const [pay] = await db.select().from(payments).where(eq(payments.providerToken, token));
