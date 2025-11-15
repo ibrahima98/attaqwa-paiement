@@ -1,5 +1,5 @@
 import { db } from '@/db/client';
-import { payments } from '@/db/schema';
+import { auditLogs, entitlements, payments } from '@/db/schema';
 import { badRequest, serverError } from '@/lib/http';
 import { jsonRes } from '@/lib/logger';
 import { rateLimit } from '@/lib/ratelimit';
@@ -33,6 +33,22 @@ export async function GET(req: NextRequest) {
     const confirmed = await confirmWithPayDunya(token);
     if (confirmed && confirmed !== row.status) {
       await db.update(payments).set({ status: confirmed }).where(eq(payments.id, row.id));
+      // Si paiement confirmé côté PayDunya, accorder l'entitlement ici (fallback),
+      // en plus de la voie normale via IPN.
+      if (confirmed === 'COMPLETED') {
+        await db
+          .insert(entitlements)
+          .values({ uid: row.uid, resourceId: row.planId, sourcePaymentId: row.id })
+          .onConflictDoUpdate({
+            target: [entitlements.uid, entitlements.resourceId],
+            set: { sourcePaymentId: row.id },
+          });
+        await db.insert(auditLogs).values({
+          uid: row.uid,
+          action: 'ENTITLEMENT_GRANTED_FALLBACK',
+          meta: { resourceId: row.planId, paymentId: row.id, via: 'status_confirm' },
+        });
+      }
       return jsonRes({ status: confirmed });
     }
     return jsonRes({ status: row.status });
