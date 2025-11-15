@@ -2,7 +2,7 @@ import { db } from '@/db/client';
 import { auditLogs, payments } from '@/db/schema';
 import { requireUser } from '@/lib/auth';
 import { badRequest, serverError } from '@/lib/http';
-import { jsonRes, log, error } from '@/lib/logger';
+import { error, jsonRes, log } from '@/lib/logger';
 import { createCheckoutInvoice } from '@/lib/paydunya';
 import { rateLimit } from '@/lib/ratelimit';
 import { NextRequest } from 'next/server';
@@ -10,8 +10,8 @@ import { NextRequest } from 'next/server';
 export const runtime = 'nodejs';
 
 const PLAN_PRICES: Record<string, {amount: number, description: string}> = {
-  BOOK_PART_2: { amount: 1000, description: 'Livre Partie 2' },
-  BOOK_PART_3: { amount: 1000, description: 'Livre Partie 3' },
+  BOOK_PART_2: { amount: 3000, description: 'Livre Partie 2' },
+  BOOK_PART_3: { amount: 3000, description: 'Livre Partie 3' },
 };
 
 export async function POST(req: NextRequest) {

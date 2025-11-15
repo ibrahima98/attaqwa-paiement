@@ -1,11 +1,10 @@
 import { db } from '@/db/client';
 import { auditLogs, entitlements, payments } from '@/db/schema';
 import { badRequest, serverError } from '@/lib/http';
-import { jsonRes } from '@/lib/logger';
+import { jsonRes, log } from '@/lib/logger';
 import { rateLimit } from '@/lib/ratelimit';
 import { eq } from 'drizzle-orm';
 import { NextRequest } from 'next/server';
-import { log } from '@/lib/logger';
 
 export const runtime = 'nodejs';
 
@@ -33,20 +32,22 @@ export async function GET(req: NextRequest) {
     const confirmed = await confirmWithPayDunya(token);
     if (confirmed && confirmed !== row.status) {
       await db.update(payments).set({ status: confirmed }).where(eq(payments.id, row.id));
-      // Si paiement confirmé côté PayDunya, accorder l'entitlement ici (fallback),
-      // en plus de la voie normale via IPN.
+      // Si paiement confirmé côté PayDunya, accorder les deux entitlements (fallback)
       if (confirmed === 'COMPLETED') {
-        await db
-          .insert(entitlements)
-          .values({ uid: row.uid, resourceId: row.planId, sourcePaymentId: row.id })
-          .onConflictDoUpdate({
-            target: [entitlements.uid, entitlements.resourceId],
-            set: { sourcePaymentId: row.id },
-          });
+        const resources = ['BOOK_PART_2','BOOK_PART_3'] as const;
+        for (const resourceId of resources) {
+          await db
+            .insert(entitlements)
+            .values({ uid: row.uid, resourceId, sourcePaymentId: row.id })
+            .onConflictDoUpdate({
+              target: [entitlements.uid, entitlements.resourceId],
+              set: { sourcePaymentId: row.id },
+            });
+        }
         await db.insert(auditLogs).values({
           uid: row.uid,
-          action: 'ENTITLEMENT_GRANTED_FALLBACK',
-          meta: { resourceId: row.planId, paymentId: row.id, via: 'status_confirm' },
+          action: 'ENTITLEMENTS_GRANTED_FALLBACK',
+          meta: { resources: ['BOOK_PART_2','BOOK_PART_3'], paymentId: row.id, via: 'status_confirm' },
         });
       }
       return jsonRes({ status: confirmed });

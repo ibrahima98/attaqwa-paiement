@@ -122,20 +122,21 @@ export async function POST(req: NextRequest) {
     await db.update(payments).set({ status }).where(eq(payments.id, pay.id));
 
     if (status === 'COMPLETED') {
-      // Grant entitlement
-      const resourceId = pay.planId;
-      await db
-        .insert(entitlements)
-        .values({ uid: pay.uid, resourceId, sourcePaymentId: pay.id })
-        .onConflictDoUpdate({
-          target: [entitlements.uid, entitlements.resourceId],
-          set: { sourcePaymentId: pay.id },
-        });
-
+      // Grant BOTH entitlements for a single successful payment
+      const resources = ['BOOK_PART_2','BOOK_PART_3'] as const;
+      for (const resourceId of resources) {
+        await db
+          .insert(entitlements)
+          .values({ uid: pay.uid, resourceId, sourcePaymentId: pay.id })
+          .onConflictDoUpdate({
+            target: [entitlements.uid, entitlements.resourceId],
+            set: { sourcePaymentId: pay.id },
+          });
+      }
       await db.insert(auditLogs).values({
         uid: pay.uid, 
-        action: 'ENTITLEMENT_GRANTED', 
-        meta: { resourceId, paymentId: pay.id }
+        action: 'ENTITLEMENTS_GRANTED',
+        meta: { resources: ['BOOK_PART_2','BOOK_PART_3'], paymentId: pay.id, via: 'ipn' }
       });
     }
 
